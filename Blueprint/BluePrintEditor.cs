@@ -2,6 +2,7 @@
 using UnityEditor;
 using UnityEditorInternal;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.UIElements;
 
 namespace ACT.BluePrintEditor
@@ -243,7 +244,7 @@ namespace ACT.BluePrintEditor
                 if (EditorGUI.EndChangeCheck())
                 {
                     serializedObject.ApplyModifiedProperties();
-                    BlueprintEventUtility.ForceUnityEventEditorAndRuntime(pageOpenedActionProp);
+                    ForceUnityEventEditorAndRuntime(pageOpenedActionProp);
                     serializedObject.ApplyModifiedProperties();
                     EditorUtility.SetDirty(target);
                     serializedObject.Update();
@@ -362,6 +363,19 @@ namespace ACT.BluePrintEditor
             }
 
             selectedPageIndex = Mathf.Clamp(selectedPageIndex, 0, pagesProp.arraySize - 1);
+        }
+
+
+        static void ForceUnityEventEditorAndRuntime(SerializedProperty unityEventProp)
+        {
+            SerializedProperty callsProp = unityEventProp?.FindPropertyRelative("m_PersistentCalls.m_Calls");
+            if (callsProp == null || !callsProp.isArray) return;
+
+            for (int i = 0; i < callsProp.arraySize; i++)
+            {
+                SerializedProperty callStateProp = callsProp.GetArrayElementAtIndex(i).FindPropertyRelative("m_CallState");
+                if (callStateProp != null) callStateProp.enumValueIndex = (int)UnityEventCallState.EditorAndRuntime;
+            }
         }
 
         void SetRelativeString(SerializedProperty parent, string name, string value)

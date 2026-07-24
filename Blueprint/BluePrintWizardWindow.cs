@@ -110,10 +110,12 @@ namespace ACT
 
         void AddStyleSheets(VisualElement root, List<StyleSheet> styleSheets)
         {
+            if (styleSheets == null) return;
+
             for (int i = 0; i < styleSheets.Count; i++)
             {
-                var styleSheet = styleSheets[i];
-                if (root.styleSheets.Contains(styleSheet)) return;
+                StyleSheet styleSheet = styleSheets[i];
+                if (styleSheet == null || root.styleSheets.Contains(styleSheet)) continue;
                 root.styleSheets.Add(styleSheet);
             }
         }
