@@ -59,7 +59,7 @@ namespace ACT.EditorUI
         {
             AddToClassList(ListClass);
             RegisterCallback<AttachToPanelEvent>(_ => OnAttached());
-            RegisterCallback<DetachFromPanelEvent>(_ => Dispose());
+            RegisterCallback<DetachFromPanelEvent>(_ => OnDetached());
         }
 
         public void SetListEvents(Action<int> onItemClicked, Action<int> onItemRightClicked)
@@ -147,6 +147,8 @@ namespace ACT.EditorUI
             else RebuildCurrentSource();
         }
 
+        void OnDetached() => ClearSourceSubscriptions();
+
         void SubscribeDataSource()
         {
             ClearSourceSubscriptions();
@@ -209,7 +211,7 @@ namespace ACT.EditorUI
                 selectedIndex = -1;
                 sourceItems = nextSource;
 
-                if (sourceItems != null) for (int i = 0; i < sourceItems.Count; i++)items.Add(sourceItems[i]);
+                if (sourceItems != null) for (int i = 0; i < sourceItems.Count; i++) items.Add(sourceItems[i]);
 
                 listView.itemsSource = sourceItems;
                 listView.Rebuild();
@@ -271,7 +273,7 @@ namespace ACT.EditorUI
 
             if (element == null)
             {
-                Debug.LogWarning($"[TemplateList] Template Element�� ������ �� �����ϴ�: {templateElement.GetType().Name}");
+                Debug.LogWarning($"[TemplateList] Template Element를 복제할 수 없습니다: {templateElement.GetType().Name}" );
                 return new VisualElement();
             }
 
@@ -389,11 +391,11 @@ namespace ACT.EditorUI
 
             string currentPath = element.dataSourcePath.ToString();
 
-            if (!string.IsNullOrWhiteSpace(currentPath))element.dataSourcePath = new PropertyPath(currentPath.ReplaceFirstIndex(index));
+            if (!string.IsNullOrWhiteSpace(currentPath)) element.dataSourcePath = new PropertyPath(currentPath.ReplaceFirstIndex(index));
 
-            if (element is IBindable bindable && !string.IsNullOrWhiteSpace(bindable.bindingPath))bindable.bindingPath = bindable.bindingPath.ReplaceFirstIndex(index);
+            if (element is IBindable bindable && !string.IsNullOrWhiteSpace(bindable.bindingPath)) bindable.bindingPath = bindable.bindingPath.ReplaceFirstIndex(index);
 
-            for (int i = 0; i < element.childCount; i++)  ApplyIndexedDataSourcePathRecursive(element[i], index);
+            for (int i = 0; i < element.childCount; i++) ApplyIndexedDataSourcePathRecursive(element[i], index);
         }
 
         string GetItemName(int index)
@@ -401,7 +403,7 @@ namespace ACT.EditorUI
             if (index == 0 && !string.IsNullOrWhiteSpace(TemplateElementName))
                 return TemplateElementName;
 
-            return string.IsNullOrWhiteSpace(ItemNamePrefix)  ? $"item_{index}" : $"{ItemNamePrefix}_{index}";
+            return string.IsNullOrWhiteSpace(ItemNamePrefix) ? $"item_{index}" : $"{ItemNamePrefix}_{index}";
         }
 
         void ApplyItemSize(VisualElement element)
@@ -517,7 +519,7 @@ namespace ACT.EditorUI
 
         VisualElement GetFirstDirectChild()
         {
-            for (int i = 0; i < childCount; i++)if (this[i] != listView)return this[i];
+            for (int i = 0; i < childCount; i++) if (this[i] != listView) return this[i];
 
             return null;
         }
@@ -526,7 +528,7 @@ namespace ACT.EditorUI
         {
             if (string.IsNullOrWhiteSpace(elementName)) return null;
 
-            for (int i = 0; i < childCount; i++)if (this[i] != listView && this[i].name == elementName)return this[i];
+            for (int i = 0; i < childCount; i++) if (this[i] != listView && this[i].name == elementName) return this[i];
 
             return null;
         }

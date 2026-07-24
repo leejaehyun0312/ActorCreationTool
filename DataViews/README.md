@@ -1,141 +1,376 @@
 # 데이터 기반 UI 구성
 
-데이터 소스와 프로퍼티 경로를 기준으로 컬렉션을 읽고, Template 또는 Cell을 생성해 반복되는 UI를 구성하는 기능입니다.
+UXML에 정의한 하나의 Template을 컬렉션 데이터에 맞춰 반복 생성하고, UI Toolkit의 `ListView` 가상화와 바인딩 경로 치환을 결합한 데이터 뷰 컴포넌트입니다.
 
-## 해결하려던 문제
+반복되는 카드, 결과 목록, 설정 항목처럼 동일한 UI 구조를 여러 데이터에 적용해야 하는 화면에서 사용합니다.
 
-반복되는 UI를 직접 생성하면 각 화면마다 다음 작업이 반복됩니다.
+## Tech Stack
 
-- 데이터 컬렉션 순회
-- VisualElement 생성
-- 항목 데이터 연결
-- 선택 상태 관리
-- 데이터 변경 시 재구성
-- 요소별 클릭 이벤트 등록
+- Unity 6
+- C#
+- UI Toolkit
+- UI Builder
+- UXML
+- Unity Properties
+- `ListView`
+- Data Binding
+- Collection Virtualization
+- Property Path
 
-이를 재사용 가능한 View로 분리해, 화면에서는 데이터 소스와 템플릿 정보만 설정하도록 구성했습니다.
+## 주요 기능
 
-## 데이터 흐름
+- UXML에 배치한 Template 기반 항목 생성
+- 컬렉션 데이터와 항목별 Data Source 연결
+- 인덱스 기반 Property Path 치환
+- 고정 높이 및 동적 높이 가상화
+- 클릭, 우클릭, 선택 이벤트 처리
+- 선택 상태 USS Class 적용
+- Attach / Detach 생명주기 관리
+- 생성 항목의 Bind / Unbind 처리
+- 직접 Items와 단순 Clone 모드 지원
+
+## TemplateList
+
+`TemplateList`는 UXML에 배치된 하나의 `VisualElement`를 원본 Template으로 사용합니다.
+
+컬렉션 항목 수에 맞춰 Template을 복제하고, 생성된 요소마다 현재 인덱스에 해당하는 Data Source Path를 적용합니다.
 
 ```text
 Data Source
-    ↓
-Property Path 탐색
-    ↓
-Collection 추출
-    ↓
-Template 또는 Cell 생성
-    ↓
-항목 데이터 연결
-    ↓
-선택 및 이벤트 처리
+→ Collection Path 탐색
+→ Template 복제
+→ Index Path 적용
+→ Item Binding
+→ ListView 가상화
 ```
 
-## 대표 코드
+## ListView 구성
 
-### `TemplateList.cs`
-
-UXML에 배치된 하나의 Template 요소를 기준으로 컬렉션 항목 수만큼 UI를 복제하는 컴포넌트입니다.
-
-주요 기능:
-
-- 데이터 소스와 Items Path 설정
-- Template VisualElement 탐색
-- 항목별 Deep Clone
-- Item을 Data Source로 연결
-- Index 기반 Data Source Path 구성
-- 선택 상태 관리
-- Click, Right Click, Selection 이벤트
-- 데이터 변경 시 Rebuild
+항목 생성과 데이터 연결을 분리하기 위해 `ListView`의 생명주기 콜백을 사용했습니다.
 
 ```csharp
-void Rebuild()
+listView = new ListView
 {
-    ClearItems();
+    selectionType = SelectionType.None,
+    makeItem = MakeItem,
+    bindItem = BindItem,
+    unbindItem = UnbindItem,
+    destroyItem = DestroyItem
+};
+```
 
-    IList items = ResolveItems(DataSource, ItemsPath);
-    if (items == null) return;
+각 콜백의 역할은 다음과 같습니다.
 
-    for (int i = 0; i < items.Count; i++)
-        CreateItem(items[i], i);
+- `makeItem`: Template을 복제하고 항목 이벤트를 등록
+- `bindItem`: 현재 Index의 데이터와 Binding Path를 연결
+- `unbindItem`: 재사용되는 항목의 데이터와 선택 상태를 해제
+- `destroyItem`: 항목에 등록한 이벤트를 최종 해제
+
+## Template 복제
+
+UXML에 배치된 Template은 반복 UI의 원본으로만 사용하며 실제 목록에서는 숨깁니다.
+
+```csharp
+void ResolveTemplateElement()
+{
+    if (templateElement != null) return;
+
+    templateElement =
+        GetDirectChildByName(TemplateElementName) ??
+        GetFirstDirectChild();
+
+    if (templateElement != null)
+        templateElement.style.display = DisplayStyle.None;
 }
 ```
 
-Template은 반복 UI의 원본으로만 사용하고, 생성된 항목은 독립적으로 유지되도록 구성했습니다.
+`ListView`가 새 항목을 요청하면 Template을 복제해 독립된 VisualElement를 생성합니다.
 
-### `GridView.cs`
+```csharp
+VisualElement MakeItem()
+{
+    VisualElement element = templateElement.CloneTemplateElement(true);
 
-행과 열 구조가 필요한 데이터 표현을 위한 Grid View입니다.
+    if (element == null)
+    {
+        Debug.LogWarning(
+            $"[TemplateList] Template Element를 복제할 수 없습니다: {templateElement.GetType().Name}"
+        );
 
-`TemplateList`와의 차이:
+        return new VisualElement();
+    }
 
-| 요소 | 목적 |
-|---|---|
-| `TemplateList` | 자유로운 UXML Template을 반복 생성 |
-| `GridView` | Column과 Cell 정의를 기준으로 표 형태의 UI 구성 |
+    element.AddToClassList(ItemClass);
+    element.CopyResolvedTextStyleFrom(templateElement);
+    RegisterItemCallbacks(element);
+
+    return element;
+}
+```
+
+## 데이터 연결 방식
+
+`TemplateList`는 세 가지 Source Mode를 지원합니다.
+
+### Binding
+
+상위 `dataSource`와 `dataSourcePath`를 기준으로 컬렉션을 읽고, 항목마다 Index Path를 적용합니다.
+
+```text
+Results
+→ Results[0]
+→ Results[1]
+→ Results[2]
+```
+
+```csharp
+void BindIndexedItem(VisualElement element, int index)
+{
+    if (dataSource == null || string.IsNullOrWhiteSpace(SourcePath))
+        return;
+
+    ApplyIndexedDataSourcePath(element, index);
+
+    element.CopyIndexedBindingsFromTemplate(
+        templateElement,
+        dataSource,
+        index
+    );
+}
+```
+
+### Items
+
+외부에서 전달한 `IList`의 각 항목을 생성 요소의 Data Source로 직접 설정합니다.
+
+```csharp
+templateList.SetItems(results);
+```
+
+### Clone
+
+데이터 없이 동일한 UI 요소를 지정한 개수만큼 생성합니다.
+
+```csharp
+templateList.SetCloneCount(5);
+```
+
+## 인덱스 기반 Binding Path
+
+Template 안의 Binding Path는 첫 번째 배열 인덱스를 현재 항목 Index로 교체합니다.
+
+```csharp
+void ApplyIndexedDataSourcePathRecursive(
+    VisualElement element,
+    int index)
+{
+    element.dataSource = dataSource;
+
+    string currentPath = element.dataSourcePath.ToString();
+
+    if (!string.IsNullOrWhiteSpace(currentPath))
+    {
+        element.dataSourcePath =
+            new PropertyPath(currentPath.ReplaceFirstIndex(index));
+    }
+
+    if (element is IBindable bindable &&
+        !string.IsNullOrWhiteSpace(bindable.bindingPath))
+    {
+        bindable.bindingPath =
+            bindable.bindingPath.ReplaceFirstIndex(index);
+    }
+
+    for (int i = 0; i < element.childCount; i++)
+        ApplyIndexedDataSourcePathRecursive(element[i], index);
+}
+```
+
+이 구조를 통해 각 항목을 별도 코드로 생성하지 않고 UXML Template의 Binding 설정을 그대로 재사용합니다.
+
+## 가상화
+
+항목 높이가 지정되지 않은 경우 동적 높이를 사용하고, 고정 높이가 지정되면 Fixed Height 가상화를 사용합니다.
+
+```csharp
+void ApplyVirtualization()
+{
+    if (ItemHeight <= 0f)
+    {
+        listView.virtualizationMethod =
+            CollectionVirtualizationMethod.DynamicHeight;
+
+        return;
+    }
+
+    listView.virtualizationMethod =
+        CollectionVirtualizationMethod.FixedHeight;
+
+    listView.fixedItemHeight =
+        ItemHeight + Mathf.Max(0f, ItemSpacing);
+}
+```
+
+항목 수가 늘어나더라도 모든 요소를 동시에 생성하지 않고 화면에 필요한 요소를 재사용합니다.
+
+## 선택과 이벤트
+
+기본 `ListView` 선택 기능 대신 생성된 Template 항목 자체의 클릭 이벤트를 사용합니다.
+
+지원 이벤트:
+
+- Item Click
+- Item Right Click
+- Item Selected
+
+```csharp
+templateList.SetListEvents(
+    onItemClicked: index => OpenItem(index),
+    onItemRightClicked: index => OpenContextMenu(index),
+    onItemSelected: index => UpdatePreview(index)
+);
+```
+
+선택 상태는 USS Class와 Property에 함께 반영합니다.
+
+```csharp
+void ApplySelection(VisualElement element, int index)
+{
+    bool isSelected = index == selectedIndex;
+
+    element.EnableInClassList(SelectedClass, isSelected);
+    element.SetProperty("Selected", isSelected);
+}
+```
+
+```css
+.template-list__item--selected {
+    border-left-width: 3px;
+}
+```
+
+## 이벤트 생명주기
+
+생성 항목은 `ListView`에서 재사용될 수 있으므로 이벤트 등록과 해제를 함께 관리합니다.
+
+```csharp
+void RegisterItemCallbacks(VisualElement element)
+{
+    EventCallback<ClickEvent> clickCallback = _ =>
+    {
+        if (TryGetIndex(element, out int index))
+            OnItemClicked(index);
+    };
+
+    element.RegisterCallback(clickCallback);
+
+    itemUnbindActions[element] = () =>
+    {
+        element.UnregisterCallback(clickCallback);
+    };
+}
+```
+
+Data Source가 `INotifyBindablePropertyChanged`를 구현한 경우 컬렉션 루트의 변경 알림을 감지해 목록을 다시 구성합니다.
+
+## UXML 사용 예시
+
+```xml
+<act:TemplateList
+    name="ResultList"
+    template-element-name="ResultCardTemplate"
+    item-name-prefix="result"
+    item-spacing="6"
+    item-height="96"
+    data-source-path="Results">
+
+    <ui:VisualElement
+        name="ResultCardTemplate"
+        class="result-card">
+
+        <ui:Label
+            name="Title"
+            binding-path="Results[0].Title" />
+
+        <ui:Label
+            name="Description"
+            binding-path="Results[0].Description" />
+    </ui:VisualElement>
+</act:TemplateList>
+```
+
+Template에 작성된 `[0]` 인덱스는 항목이 Binding될 때 현재 Index로 치환됩니다.
+
+## GridView
+
+`GridView`는 카드나 자유로운 목록이 아닌 행과 열 기반 데이터 표현을 위한 추가 데이터 뷰입니다.
+
+```text
+GridView
+├─ Column Template
+├─ Header
+└─ ListView
+   └─ Row
+      └─ GridCellView[]
+```
 
 주요 기능:
 
-- Column Template 구성
-- Header 생성
-- Row와 Cell 동적 생성
-- Column Width 적용
-- 스크롤 영역과 고정 Header 구성
-- Cell 단위 데이터 편집
+- Column Template을 기반으로 Header 생성
+- 고정 폭 Column 배치
+- Row 가상화
+- Header와 Body의 가로 스크롤 동기화
+- 행 선택
+- Cell 값 변경 이벤트 전달
+
+```csharp
+listView = new ListView
+{
+    selectionType = SelectionType.None,
+    virtualizationMethod =
+        CollectionVirtualizationMethod.FixedHeight,
+    fixedItemHeight = RowHeight,
+    makeItem = MakeRow,
+    bindItem = BindRow,
+    unbindItem = UnbindRow
+};
+```
+
+`TemplateList`가 자유로운 UXML Template 반복에 집중한다면, `GridView`는 일정한 Column 구조를 가진 표 형태의 UI에 사용합니다.
+
+## 코드 구조
+
+```text
+DataViews/
+├─ TemplateList.cs
+├─ GridView.cs
+├─ GridCellView.cs
+└─ README.md
+```
+
+### `TemplateList.cs`
+
+대표 코드입니다.
+
+UXML Template 복제, 컬렉션 Binding, 가상화, 선택과 항목 이벤트를 담당합니다.
+
+### `GridView.cs`
+
+Header, Row, Column Width와 스크롤을 관리하는 표 형태의 데이터 뷰입니다.
 
 ### `GridCellView.cs`
 
-Grid의 Column 및 Cell 표현을 담당합니다. 데이터 타입에 따라 Label, TextField, Toggle 등 적합한 UI 요소를 생성하고 값을 표시하거나 수정합니다.
+Grid Column Template과 Runtime Cell을 담당합니다.
 
-## 데이터 소스 설정 UI
+- Row Index 기반 Binding Path 구성
+- UI 요소 타입에 따른 값 표시
+- 편집 가능한 Field의 값 변경 처리
+- Runtime Cell Bind / Unbind
 
-### `DataSourceBindingPanel.cs`
+## 사용 구분
 
-Object와 JSON 데이터의 경로를 탐색하고 UI 바인딩 정보를 구성하기 위한 실제 편집 도구입니다.
-
-다음 기능을 포함합니다.
-
-- 데이터 소스 선택
-- 프로퍼티 경로 탐색
-- Key와 Value 매핑
-- Preset 저장 및 불러오기
-- JSON 구조 탐색
-- 바인딩 설정 목록 관리
-
-이 파일은 여러 기능을 포함하는 실제 활용 사례이기 때문에, README에서는 내부 메서드를 모두 설명하지 않고 DataViews 시스템이 실제 도구에서 어떻게 사용되는지를 보여주는 예시로 다룹니다.
-
-### `DataSourceDropDown.cs`
-
-중첩된 데이터 구조를 탐색하고 경로를 선택할 수 있는 Dropdown UI입니다.
-
-### `ValueParser.cs`
-
-문자열, 숫자, Boolean, Enum, Unity 타입 등의 값을 대상 타입에 맞게 변환하고, 데이터 경로를 해석하는 공통 기능을 제공합니다.
-
-## 구현 시 고려한 점
-
-### View와 데이터의 분리
-
-View는 특정 데이터 클래스에 종속되지 않고 `object`와 Property Path를 통해 데이터를 탐색합니다.
-
-### 반복 UI의 재사용
-
-목록마다 별도의 생성 코드를 작성하지 않고 TemplateList와 GridView를 재사용할 수 있도록 구성했습니다.
-
-### 선택 상태와 이벤트 통합
-
-항목 생성뿐 아니라 선택, 우클릭, 항목 Click 등 목록 UI에서 반복되는 상호작용도 View 내부에서 처리합니다.
-
-## 관련 파일
-
-대표 코드:
-
-- [`TemplateList.cs`](./TemplateList.cs)
-- [`GridView.cs`](./GridView.cs)
-- [`GridCellView.cs`](./GridCellView.cs)
-
-활용 및 지원 코드:
-
-- `DataSourceBindingPanel.cs`
-- `DataSourceDropDown.cs`
-- `ValueParser.cs`
+| 컴포넌트 | 사용 목적 |
+|---|---|
+| `TemplateList` | 카드, 결과 목록, 설정 항목처럼 자유로운 Template 반복 |
+| `GridView` | 행과 열이 명확한 표 형태의 데이터 표시와 편집 |
+| `GridCellView` | GridView의 Column 정의와 Cell Binding |
