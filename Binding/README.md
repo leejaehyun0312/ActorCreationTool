@@ -205,7 +205,8 @@ PropertyBinding에서 사용하는 공통 Reflection 처리 계층입니다.
 UI Builder에서 `EventButton`을 배치한 뒤 `Method Binding...` 버튼을 눌러 Target과 Method를 선택합니다.
 
 ```xml
-<act:EventButton text="Execute" />
+<act:EventButton name="ExecutePipelineButton"text="전체 통합 실행"method-binding="Bound: 통합실행기.ExecutePipeline()"
+method-invoker-data="120023232e8439e489a7f23c6b1d6cdc|ExecutePipeline%28%29|" class="execute-pipeline-button" />
 ```
 
 실제 Target GUID, Method Signature, Argument 정보는 Method Binding 창에서 생성되어 UXML에 저장됩니다.
