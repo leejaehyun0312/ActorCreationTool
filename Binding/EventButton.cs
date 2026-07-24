@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using ACT.Utiltiy;
 using Unity.Properties;
 using UnityEngine.UIElements;
@@ -158,4 +159,22 @@ namespace ACT
             Invoker = invoker;
         }
     }
+}
+
+namespace ACT.Utiltiy
+{
+    public static class EventButtonBinder
+            {
+                public static void BindAll(VisualElement root, object fallbackTarget = null)
+                {
+                    if (root == null) return;
+                    foreach (var button in root.Query<EventButton>().ToList()) button.Target = fallbackTarget;
+                }
+
+                public static void UnbindAll(VisualElement root)
+                {
+                    if (root == null) return;
+                    foreach (var button in root.Query<EventButton>().ToList()) button.Target = null;
+                }
+            }
 }
