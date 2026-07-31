@@ -81,11 +81,6 @@ PreviewChannel
 
 ## Preview 전체 구성
 
-![Preview 구성 요소](./docs/preview-components.png)
-
-> [이미지 필요: Preview 구성 요소를 번호로 표시한 화면 — Toolbar, Transform Tool Overlay, Direction Buttons, Grid, Hierarchy, Animation Controls]  
-> 경로: `docs/preview-components.png`
-
 ## SceneViewElement
 
 `SceneViewElement`는 Preview UI의 중심이 되는 커스텀 `VisualElement`입니다.
@@ -489,7 +484,6 @@ Preview/
 ├─ README.md
 └─ docs/
    ├─ preview-overview.png
-   ├─ preview-components.png
    ├─ preview-camera-controls.gif
    ├─ preview-transform-tools.gif
    ├─ preview-view-modes.png
