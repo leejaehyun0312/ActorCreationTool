@@ -5,6 +5,8 @@ using Unity.Properties;
 using UnityEditor;
 using UnityEditor.Animations;
 using UnityEngine;
+using UnityEngine.Animations;
+using UnityEngine.Playables;
 using UnityEngine.UIElements;
 
 namespace ACT.EditorUI
@@ -12,25 +14,16 @@ namespace ACT.EditorUI
     [UxmlElement]
     public partial class SceneViewAnimationPlayer : VisualElement, IDisposable
     {
-        const string ParamSpeed = "Speed";
-        const string ParamGrounded = "Grounded";
-        const string ParamFreeFall = "FreeFall";
-        const string ParamMotionSpeed = "MotionSpeed";
+        enum PlaybackMode { None, Controller, Clip }
 
-        readonly Dictionary<string, string> states = new();
+        const string SpeedParameter = "Speed";
+        const string MotionSpeedParameter = "MotionSpeed";
 
-        SceneViewElement sceneView;
-        Animator animator;
-        RuntimeAnimatorController previousController;
-        bool previousControllerCaptured;
-        bool playing;
-        double lastTime;
-        SceneViewAnimationPlayerPreset preset;
+        readonly Dictionary<string, string> states = new(StringComparer.OrdinalIgnoreCase);
 
-        [UxmlAttribute] public string TargetSceneViewName { get; set; } = "SceneViewElement";
-        [UxmlAttribute] public float ButtonWidth { get; set; } = 56f;
-        [UxmlAttribute] public float ButtonHeight { get; set; } = 74f;
-        [UxmlAttribute] public float ButtonGap { get; set; } = 3f;
+        [UxmlAttribute] public bool AutoBindOnAttach { get; set; } = true;
+        [UxmlAttribute] public string AnimationControlsRootName { get; set; } = "PreviewAnimationControls";
+        [UxmlAttribute] public string PoseLayoutName { get; set; } = "PreviewPoseLayout";
 
         [UxmlAttribute, CreateProperty]
         public SceneViewAnimationPlayerPreset Preset
@@ -40,269 +33,313 @@ namespace ACT.EditorUI
             {
                 if (preset == value) return;
                 preset = value;
-                CacheStates();
                 RebuildButtons();
+                RebindAnimator();
             }
         }
 
-        public bool IsPlaying => playing;
+        [UxmlAttribute, CreateProperty]
+        public PreviewChannel Channel
+        {
+            get => channel;
+            set
+            {
+                if (channel == value) return;
+                UnbindChannel();
+                channel = value;
+                BindChannel();
+            }
+        }
+
+        SceneViewAnimationPlayerPreset preset;
+        PreviewChannel channel;
+        Animator animator;
+        GameObject currentRoot;
+        PlayableGraph graph;
+        AnimationClipPlayable clipPlayable;
+        PlaybackMode playbackMode;
+        int controllerStateHash;
+        bool poseLayoutVisible;
+        bool disposed;
+        double lastUpdateTime;
+        double elapsed;
+        double duration;
+        double clipSpeed = 1d;
 
         public SceneViewAnimationPlayer()
         {
-            style.flexDirection = FlexDirection.Row;
-            style.alignItems = Align.Center;
-            style.justifyContent = Justify.Center;
-            style.flexGrow = 1f;
-
-            RegisterCallback<AttachToPanelEvent>(_ => Bind());
+            AddToClassList("scene-view-animation-player");
+            RegisterCallback<AttachToPanelEvent>(_ => OnAttach());
             RegisterCallback<DetachFromPanelEvent>(_ => Dispose());
         }
 
-        public void Bind()
+        void OnAttach()
         {
-            sceneView = panel.visualTree.Q<SceneViewElement>(TargetSceneViewName);
+            disposed = false;
+            EditorApplication.update -= UpdatePlayer;
+            EditorApplication.update += UpdatePlayer;
 
-            if (sceneView != null) sceneView.PreviewHierarchyChanged += ClearModelCache;
+            if (!AutoBindOnAttach) return;
 
-            CacheStates();
+            BindChannel();
             RebuildButtons();
-
-            EditorApplication.update -= Update;
-            EditorApplication.update += Update;
+            RebindAnimator();
         }
 
-        public void Dispose()
+        public void TogglePose()
         {
-            Reset(false);
-            EditorApplication.update -= Update;
-
-            if (sceneView != null) sceneView.PreviewHierarchyChanged -= ClearModelCache;
-
-            sceneView = null;
-            animator = null;
-            previousController = null;
-            previousControllerCaptured = false;
-            playing = false;
+            poseLayoutVisible = !poseLayoutVisible;
+            VisualElement root = panel?.visualTree ?? GetRoot();
+            SetDisplay(root?.Q<VisualElement>(AnimationControlsRootName), poseLayoutVisible);
+            SetDisplay(root?.Q<VisualElement>(PoseLayoutName), poseLayoutVisible);
         }
 
         public void Play(string key)
         {
-            SceneViewAnimationPlayerItem item = FindItem(key);
-
-            if (item == null)
-            {
-                Debug.LogWarning($"[SceneViewAnimationPlayer] Animation item not found: {key}");
-                return;
-            }
-
-            if (item.Reset)
-            {
-                Reset(true);
-                sceneView?.RepaintPreview();
-                return;
-            }
-
-            PlayState(string.IsNullOrWhiteSpace(item.StateName) ? item.Key : item.StateName, item.Speed, item.MotionSpeed, item.Loop);
-            sceneView?.RepaintPreview();
+            SceneViewAnimationPlayerItem item = preset?.Find(key);
+            if (item != null) Play(item);
         }
+
+        public bool TryPlayControllerState(string stateName, float speed, float motionSpeed)
+        {
+            if (string.IsNullOrWhiteSpace(stateName) || !PrepareAnimator()) return false;
+
+            string resolvedState = ResolveState(stateName);
+            if (string.IsNullOrWhiteSpace(resolvedState)) return false;
+
+            int stateHash = Animator.StringToHash(resolvedState);
+            if (!animator.HasState(0, stateHash)) return false;
+
+            StopPlayback();
+            animator.speed = 1f;
+            SetFloatParameter(SpeedParameter, speed);
+            SetFloatParameter(MotionSpeedParameter, motionSpeed);
+            animator.Play(stateHash, 0, 0f);
+            animator.Update(0f);
+
+            controllerStateHash = stateHash;
+            duration = Math.Max(0.0001d, animator.GetCurrentAnimatorStateInfo(0).length);
+            elapsed = 0d;
+            playbackMode = PlaybackMode.Controller;
+            lastUpdateTime = EditorApplication.timeSinceStartup;
+            channel?.RequestRepaint();
+            return true;
+        }
+
+        public bool TrySampleClip(AnimationClip clip, float normalizedTime = 0f)
+        {
+            if (clip == null || !PrepareAnimator()) return false;
+
+            StopPlayback();
+            CreateGraph(clip);
+            duration = clip.length;
+            elapsed = Mathf.Clamp01(normalizedTime) * duration;
+            clipPlayable.SetTime(elapsed);
+            graph.Evaluate(0f);
+            channel?.RequestRepaint();
+            return true;
+        }
+
+        public void StopAnimation() => Reset(true);
 
         public void Reset(bool resetAnimator)
         {
-            playing = false;
+            StopPlayback();
 
-            if (animator == null) return;
-
-            if (previousControllerCaptured) animator.runtimeAnimatorController = previousController;
-
-            if (resetAnimator)
+            if (resetAnimator && animator != null)
             {
+                animator.speed = 1f;
                 animator.Rebind();
                 animator.Update(0f);
             }
 
-            previousController = null;
-            previousControllerCaptured = false;
+            channel?.RequestRepaint();
         }
 
-        public void ClearModelCache()
+        void Play(SceneViewAnimationPlayerItem item)
         {
-            Reset(false);
-            animator = null;
-            previousController = null;
-            previousControllerCaptured = false;
-            playing = false;
-        }
-
-        void Update()
-        {
-            if (sceneView == null || !sceneView.IsPreviewActive || !playing) return;
-
-            if (animator == null)
+            if (item.Reset)
             {
-                playing = false;
+                Reset(true);
                 return;
             }
 
-            double now = EditorApplication.timeSinceStartup;
-            float deltaTime = Mathf.Clamp((float)(now - lastTime), 0f, 0.05f);
+            string stateName = string.IsNullOrWhiteSpace(item.StateName) ? item.Key : item.StateName;
+            if (TryPlayControllerState(stateName, item.Speed, item.MotionSpeed)) return;
 
-            lastTime = now;
-            animator.Update(deltaTime);
-            sceneView.RepaintPreview();
+            AnimationClip clip = FindClip(stateName);
+            if (clip != null) PlayClip(clip, item.MotionSpeed);
+        }
+
+        bool PlayClip(AnimationClip clip, float speed)
+        {
+            if (clip == null || !PrepareAnimator()) return false;
+
+            StopPlayback();
+            CreateGraph(clip);
+
+            clipSpeed = Mathf.Approximately(speed, 0f) ? 1d : speed;
+            duration = clip.length;
+            elapsed = clipSpeed < 0d ? duration : 0d;
+            playbackMode = PlaybackMode.Clip;
+            lastUpdateTime = EditorApplication.timeSinceStartup;
+
+            clipPlayable.SetTime(elapsed);
+            graph.Evaluate(0f);
+            channel?.RequestRepaint();
+            return true;
+        }
+
+        void CreateGraph(AnimationClip clip)
+        {
+            graph = PlayableGraph.Create("SceneViewAnimationPlayer");
+            AnimationPlayableOutput output = AnimationPlayableOutput.Create(graph, "Animation", animator);
+            clipPlayable = AnimationClipPlayable.Create(graph, clip);
+            clipPlayable.SetApplyFootIK(false);
+            clipPlayable.SetApplyPlayableIK(false);
+            clipPlayable.SetSpeed(0d);
+            output.SetSourcePlayable(clipPlayable);
+            graph.Play();
+        }
+
+        void UpdatePlayer()
+        {
+            if (disposed || channel?.IsActive != true || playbackMode == PlaybackMode.None) return;
+
+            double now = EditorApplication.timeSinceStartup;
+            double deltaTime = Math.Min(Math.Max(now - lastUpdateTime, 0d), 0.05d);
+            lastUpdateTime = now;
+
+            if (playbackMode == PlaybackMode.Controller) UpdateController(deltaTime);
+            else UpdateClip(deltaTime);
+
+            channel.RequestRepaint();
+        }
+
+        void UpdateController(double deltaTime)
+        {
+            if (animator == null || duration <= 0d)
+            {
+                playbackMode = PlaybackMode.None;
+                return;
+            }
+
+            elapsed = (elapsed + deltaTime) % duration;
+            animator.Play(controllerStateHash, 0, (float)(elapsed / duration));
+            animator.Update(0f);
+        }
+
+        void UpdateClip(double deltaTime)
+        {
+            if (!graph.IsValid() || duration <= 0d)
+            {
+                playbackMode = PlaybackMode.None;
+                return;
+            }
+
+            elapsed = (elapsed + deltaTime * clipSpeed) % duration;
+            if (elapsed < 0d) elapsed += duration;
+
+            clipPlayable.SetTime(elapsed);
+            graph.Evaluate(0f);
+        }
+
+        void BindChannel()
+        {
+            if (channel == null || panel == null) return;
+
+            channel.Changed -= OnPreviewChanged;
+            channel.Changed += OnPreviewChanged;
+            OnPreviewChanged(channel.PreviewObject);
+        }
+
+        void UnbindChannel()
+        {
+            if (channel != null) channel.Changed -= OnPreviewChanged;
+        }
+
+        void OnPreviewChanged(GameObject root)
+        {
+            currentRoot = root;
+            RebindAnimator();
+        }
+
+        void RebindAnimator()
+        {
+            StopPlayback();
+            states.Clear();
+
+            animator = currentRoot != null ? currentRoot.GetComponentInChildren<Animator>(true) : null;
+            if (animator == null) return;
+
+            animator.enabled = true;
+            animator.speed = 1f;
+            animator.applyRootMotion = false;
+            animator.updateMode = AnimatorUpdateMode.UnscaledTime;
+            animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+
+            if (preset?.Controller != null)
+                animator.runtimeAnimatorController = preset.Controller;
+
+            animator.Rebind();
+            animator.Update(0f);
+            CacheStates();
+        }
+
+        bool PrepareAnimator()
+        {
+            if (animator == null) RebindAnimator();
+            if (animator == null) return false;
+            if (states.Count == 0) CacheStates();
+            return true;
         }
 
         void RebuildButtons()
         {
             Clear();
-
             if (preset == null) return;
 
-            foreach (SceneViewAnimationPlayerItem item in preset.Items)
+            for (int i = 0; i < preset.Items.Count; i++)
             {
+                SceneViewAnimationPlayerItem item = preset.Items[i];
                 if (item == null || string.IsNullOrWhiteSpace(item.Key)) continue;
 
-                Button button = new(() => Play(item.Key)) { text = string.IsNullOrWhiteSpace(item.DisplayName) ? item.Key : item.DisplayName };
-                ApplyButtonStyle(button);
+                Button button = new(() => Play(item.Key))
+                {
+                    text = string.IsNullOrWhiteSpace(item.DisplayName) ? item.Key : item.DisplayName
+                };
+
+                button.AddToClassList("scene-view-animation-player__button");
                 Add(button);
             }
         }
 
-        void ApplyButtonStyle(Button button)
+        AnimationClip FindClip(string stateName)
         {
-            button.style.width = ButtonWidth;
-            button.style.height = ButtonHeight;
-            button.style.marginLeft = ButtonGap;
-            button.style.marginRight = ButtonGap;
-            button.style.fontSize = 10f;
-            button.style.color = new StyleColor(new Color(0.88f, 0.88f, 0.88f));
-            button.style.backgroundColor = new StyleColor(new Color(0.10f, 0.10f, 0.10f, 0.92f));
-            button.style.borderLeftWidth = 1f;
-            button.style.borderRightWidth = 1f;
-            button.style.borderTopWidth = 1f;
-            button.style.borderBottomWidth = 1f;
-            button.style.borderTopLeftRadius = 8f;
-            button.style.borderTopRightRadius = 8f;
-            button.style.borderBottomLeftRadius = 8f;
-            button.style.borderBottomRightRadius = 8f;
-            button.style.unityTextAlign = TextAnchor.LowerCenter;
-            button.style.borderLeftColor = new StyleColor(new Color(0.37f, 0.37f, 0.37f));
-            button.style.borderRightColor = new StyleColor(new Color(0.37f, 0.37f, 0.37f));
-            button.style.borderTopColor = new StyleColor(new Color(0.37f, 0.37f, 0.37f));
-            button.style.borderBottomColor = new StyleColor(new Color(0.37f, 0.37f, 0.37f));
-        }
+            if (preset?.Controller == null || string.IsNullOrWhiteSpace(stateName)) return null;
 
-        SceneViewAnimationPlayerItem FindItem(string key)
-        {
-            if (preset == null || string.IsNullOrWhiteSpace(key)) return null;
-            return preset.Items.Find(x => x != null && x.Key == key);
-        }
+            string normalized = Normalize(stateName);
 
-        bool PlayState(string stateName, float speed, float motionSpeed, bool loop)
-        {
-            if (!PrepareAnimator()) return false;
+            foreach (AnimationClip clip in preset.Controller.animationClips)
+                if (clip != null && Normalize(clip.name) == normalized)
+                    return clip;
 
-            string state = ResolveState(stateName);
-
-            if (string.IsNullOrWhiteSpace(state))
-            {
-                Debug.LogWarning($"[SceneViewAnimationPlayer] State를 찾지 못했습니다: {stateName}");
-                LogStates();
-                return false;
-            }
-
-            SetAnimatorParameter(ParamSpeed, speed);
-            SetAnimatorParameter(ParamMotionSpeed, motionSpeed);
-            SetAnimatorParameter(ParamGrounded, true);
-            SetAnimatorParameter(ParamFreeFall, false);
-
-            animator.Play(state, 0, 0f);
-            animator.Update(0f);
-
-            lastTime = EditorApplication.timeSinceStartup;
-            playing = loop;
-            return true;
-        }
-
-        bool PrepareAnimator()
-        {
-            if (sceneView == null || !sceneView.IsPreviewActive || sceneView.PreviewRootTransform == null) return false;
-
-            Animator target = sceneView.PreviewRootTransform.GetComponentInChildren<Animator>(true);
-
-            if (target == null)
-            {
-                Debug.LogWarning("[SceneViewAnimationPlayer] Preview 모델에 Animator가 없습니다.");
-                return false;
-            }
-
-            if (preset != null && preset.ValidateHumanoid)
-            {
-                if (target.avatar == null)
-                {
-                    Debug.LogWarning("[SceneViewAnimationPlayer] Preview 모델 Animator의 Avatar가 None입니다. FBX Rig를 Humanoid로 설정해야 합니다.");
-                    return false;
-                }
-
-                if (!target.avatar.isValid || !target.avatar.isHuman)
-                {
-                    Debug.LogWarning("[SceneViewAnimationPlayer] Preview 모델 Avatar가 Humanoid가 아닙니다.");
-                    return false;
-                }
-            }
-
-            if (!previousControllerCaptured || animator != target)
-            {
-                previousController = target.runtimeAnimatorController;
-                previousControllerCaptured = true;
-            }
-
-            animator = target;
-            animator.enabled = true;
-            animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
-
-            if (preset != null && preset.Controller != null) animator.runtimeAnimatorController = preset.Controller;
-
-            CacheStates();
-            return true;
-        }
-
-        void SetAnimatorParameter(string parameterName, float value)
-        {
-            foreach (AnimatorControllerParameter parameter in animator.parameters)
-            {
-                if (parameter.name != parameterName || parameter.type != AnimatorControllerParameterType.Float) continue;
-                animator.SetFloat(parameterName, value);
-                return;
-            }
-        }
-
-        void SetAnimatorParameter(string parameterName, bool value)
-        {
-            foreach (AnimatorControllerParameter parameter in animator.parameters)
-            {
-                if (parameter.name != parameterName || parameter.type != AnimatorControllerParameterType.Bool) continue;
-                animator.SetBool(parameterName, value);
-                return;
-            }
+            return null;
         }
 
         void CacheStates()
         {
             states.Clear();
 
-            AnimatorController controller = preset?.Controller as AnimatorController;
-            if (controller == null && animator != null) controller = animator.runtimeAnimatorController as AnimatorController;
-
+            AnimatorController controller = GetAnimatorController(preset?.Controller ?? animator?.runtimeAnimatorController);
             if (controller == null) return;
 
             foreach (AnimatorControllerLayer layer in controller.layers)
-                CacheStatesRecursive(layer.stateMachine, layer.name);
+                CacheStates(layer.stateMachine, layer.name);
         }
 
-        void CacheStatesRecursive(AnimatorStateMachine stateMachine, string path)
+        void CacheStates(AnimatorStateMachine stateMachine, string path)
         {
-            if (stateMachine == null) return;
-
             foreach (ChildAnimatorState child in stateMachine.states)
             {
                 AnimatorState state = child.state;
@@ -310,45 +347,93 @@ namespace ACT.EditorUI
 
                 string fullPath = $"{path}.{state.name}";
                 states.TryAdd(state.name, fullPath);
+                states.TryAdd(fullPath, fullPath);
 
-                if (state.motion != null) states.TryAdd(state.motion.name, fullPath);
+                if (state.motion != null)
+                    states.TryAdd(state.motion.name, fullPath);
             }
 
             foreach (ChildAnimatorStateMachine child in stateMachine.stateMachines)
-                CacheStatesRecursive(child.stateMachine, $"{path}.{child.stateMachine.name}");
+                if (child.stateMachine != null)
+                    CacheStates(child.stateMachine, $"{path}.{child.stateMachine.name}");
         }
 
         string ResolveState(string stateName)
         {
-            if (string.IsNullOrWhiteSpace(stateName)) return null;
             if (states.TryGetValue(stateName, out string direct)) return direct;
 
-            string request = Normalize(stateName);
+            string normalized = Normalize(stateName);
 
-            foreach (var pair in states)if (Normalize(pair.Key) == request) return pair.Value;
+            foreach (KeyValuePair<string, string> pair in states)
+                if (Normalize(pair.Key) == normalized)
+                    return pair.Value;
 
-            foreach (var pair in states)
+            foreach (KeyValuePair<string, string> pair in states)
             {
-                string state = Normalize(pair.Key);
-                if (state.Contains(request) || request.Contains(state)) return pair.Value;
+                string cached = Normalize(pair.Key);
+                if (cached.Contains(normalized) || normalized.Contains(cached))
+                    return pair.Value;
             }
 
-            return stateName;
+            return null;
         }
 
-        static string Normalize(string value) => value.Replace(" ", "").Replace("_", "").Replace("-", "").Replace(".", "").Replace("/", "").ToLowerInvariant();
-
-        void LogStates()
+        void SetFloatParameter(string name, float value)
         {
-            if (states.Count == 0)
+            foreach (AnimatorControllerParameter parameter in animator.parameters)
             {
-                Debug.LogWarning("[SceneViewAnimationPlayer] Controller에서 캐싱된 State가 없습니다.");
+                if (parameter.name != name || parameter.type != AnimatorControllerParameterType.Float) continue;
+                animator.SetFloat(parameter.nameHash, value);
                 return;
             }
+        }
 
-            string result = "[SceneViewAnimationPlayer] 사용 가능한 Animation State 목록\n";
-            foreach (var pair in states) result += $"- Key: {pair.Key} / Path: {pair.Value}\n";
-            Debug.Log(result);
+        void StopPlayback()
+        {
+            playbackMode = PlaybackMode.None;
+            controllerStateHash = 0;
+            elapsed = duration = 0d;
+            clipSpeed = 1d;
+
+            if (graph.IsValid())
+                graph.Destroy();
+        }
+
+        VisualElement GetRoot()
+        {
+            VisualElement root = this;
+            while (root.parent != null) root = root.parent;
+            return root;
+        }
+
+        static AnimatorController GetAnimatorController(RuntimeAnimatorController controller)
+        {
+            while (controller is AnimatorOverrideController overrideController)
+                controller = overrideController.runtimeAnimatorController;
+
+            return controller as AnimatorController;
+        }
+
+        static void SetDisplay(VisualElement element, bool visible)
+        {
+            if (element != null) element.style.display = visible ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+
+        static string Normalize(string value) => string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Replace(" ", "").Replace("_", "").Replace("-", "").Replace(".", "").Replace("/", "").ToLowerInvariant();
+
+        public void Dispose()
+        {
+            if (disposed) return;
+
+            disposed = true;
+            EditorApplication.update -= UpdatePlayer;
+            UnbindChannel();
+            StopPlayback();
+            states.Clear();
+            animator = null;
+            currentRoot = null;
         }
     }
 }

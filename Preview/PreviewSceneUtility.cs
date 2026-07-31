@@ -161,19 +161,19 @@ namespace ACT.EditorUI
 
         void CreateLights()
         {
-            keyLightObject = new GameObject("Preview Key Light") { hideFlags = HideFlags.HideAndDontSave };
-            Light keyLight = keyLightObject.AddComponent<Light>();
-            keyLight.type = LightType.Directional;
-            keyLight.intensity = 1.35f;
-            keyLight.transform.rotation = Quaternion.Euler(45f, 35f, 0f);
-            MoveToPreviewScene(keyLightObject);
+            keyLightObject = CreateLight("Preview Key Light", 1.35f, new Vector3(45f, 35f));
+            fillLightObject = CreateLight("Preview Fill Light", 0.45f, new Vector3(330f, 215f));
+        }
 
-            fillLightObject = new GameObject("Preview Fill Light") { hideFlags = HideFlags.HideAndDontSave };
-            Light fillLight = fillLightObject.AddComponent<Light>();
-            fillLight.type = LightType.Directional;
-            fillLight.intensity = 0.45f;
-            fillLight.transform.rotation = Quaternion.Euler(330f, 215f, 0f);
-            MoveToPreviewScene(fillLightObject);
+        GameObject CreateLight(string name, float intensity, Vector3 rotation)
+        {
+            GameObject target = new(name) { hideFlags = HideFlags.HideAndDontSave };
+            Light light = target.AddComponent<Light>();
+            light.type = LightType.Directional;
+            light.intensity = intensity;
+            light.transform.rotation = Quaternion.Euler(rotation);
+            MoveToPreviewScene(target);
+            return target;
         }
 
         void SetupCamera(Vector3 target, Vector2 orbit, float distance, Color backgroundColor)
@@ -225,11 +225,7 @@ namespace ACT.EditorUI
             gridMaterial = SceneViewElementUtility.CreateLineMaterial("Preview Grid Material", gridColor, true);
             filter.sharedMesh = gridMesh;
             renderer.sharedMaterial = gridMaterial;
-            renderer.shadowCastingMode = ShadowCastingMode.Off;
-            renderer.receiveShadows = false;
-            renderer.lightProbeUsage = LightProbeUsage.Off;
-            renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
-            renderer.allowOcclusionWhenDynamic = false;
+            ConfigureRenderer(renderer, ShadowCastingMode.Off, false);
             MoveToPreviewScene(gridObject);
         }
 
@@ -286,12 +282,7 @@ namespace ACT.EditorUI
         void CacheRenderers()
         {
             modelRenderers.Clear();
-            if (previewInstance == null) return;
-
-            modelRenderers.AddRange(previewInstance.GetComponentsInChildren<Renderer>(true));
-            for (int i = 0; i < modelRenderers.Count; i++)
-                if (modelRenderers[i] is SkinnedMeshRenderer skinnedRenderer)
-                    skinnedRenderer.updateWhenOffscreen = true;
+            if (previewInstance != null) modelRenderers.AddRange(previewInstance.GetComponentsInChildren<Renderer>(true));
         }
 
         void ApplyPreviewUpdateSettings(GameObject root)
@@ -358,12 +349,8 @@ namespace ACT.EditorUI
         void ApplyWireframeRendererSettings(Renderer renderer)
         {
             renderer.sharedMaterial = GetWireframeMaterial();
-            renderer.shadowCastingMode = ShadowCastingMode.Off;
-            renderer.receiveShadows = false;
-            renderer.lightProbeUsage = LightProbeUsage.Off;
-            renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
-            renderer.allowOcclusionWhenDynamic = false;
             renderer.enabled = true;
+            ConfigureRenderer(renderer, ShadowCastingMode.Off, false);
         }
 
         void ClearWireframeObjects()
@@ -381,6 +368,15 @@ namespace ACT.EditorUI
             return wireframeMaterial;
         }
 
+        static void ConfigureRenderer(Renderer renderer, ShadowCastingMode shadows, bool receiveShadows)
+        {
+            renderer.shadowCastingMode = shadows;
+            renderer.receiveShadows = receiveShadows;
+            renderer.lightProbeUsage = LightProbeUsage.Off;
+            renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+            renderer.allowOcclusionWhenDynamic = false;
+        }
+
         void ApplyFallbackMaterials(GameObject root)
         {
             Renderer[] renderers = root.GetComponentsInChildren<Renderer>(true);
@@ -390,10 +386,7 @@ namespace ACT.EditorUI
         void ApplyFallbackMaterial(Renderer renderer)
         {
             Material[] materials = renderer.sharedMaterials;
-            renderer.shadowCastingMode = ShadowCastingMode.On;
-            renderer.receiveShadows = true;
-            renderer.lightProbeUsage = LightProbeUsage.Off;
-            renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+            ConfigureRenderer(renderer, ShadowCastingMode.On, true);
 
             if (materials == null || materials.Length == 0)
             {
@@ -465,16 +458,13 @@ namespace ACT.EditorUI
             scene = default;
         }
 
-        void DestroyMaterial(ref Material material)
-        {
-            if (material != null) Object.DestroyImmediate(material);
-            material = null;
-        }
+        void DestroyMaterial(ref Material material) => DestroyObject(ref material);
+        void DestroyMesh(ref Mesh mesh) => DestroyObject(ref mesh);
 
-        void DestroyMesh(ref Mesh mesh)
+        static void DestroyObject<T>(ref T target) where T : Object
         {
-            if (mesh != null) Object.DestroyImmediate(mesh);
-            mesh = null;
+            if (target != null) Object.DestroyImmediate(target);
+            target = null;
         }
     }
 
@@ -500,6 +490,17 @@ namespace ACT.EditorUI
         static readonly Color OverlayButtonActiveColor = new(0.30f, 0.43f, 0.65f, 0.98f);
 
         static readonly Dictionary<SceneViewToolMode, GUIContent> ToolIconCache = new();
+
+        static readonly SceneViewToolMode[] ToolModes = { SceneViewToolMode.Hand, SceneViewToolMode.Move, SceneViewToolMode.Rotate, SceneViewToolMode.Scale, SceneViewToolMode.Rect, SceneViewToolMode.Transform };
+        static readonly string[][] ToolIcons =
+        {
+            new[] { "ViewToolMove", "d_ViewToolMove", "PanTool", "d_PanTool" },
+            new[] { "MoveTool", "d_MoveTool", "MoveTool On", "d_MoveTool On" },
+            new[] { "RotateTool", "d_RotateTool", "RotateTool On", "d_RotateTool On" },
+            new[] { "ScaleTool", "d_ScaleTool", "ScaleTool On", "d_ScaleTool On" },
+            new[] { "RectTool", "d_RectTool", "RectTool On", "d_RectTool On" },
+            new[] { "TransformTool", "d_TransformTool", "TransformTool On", "d_TransformTool On" }
+        };
 
         public static Mesh CreateGridMesh(int gridLineCount, float gridSize, Color gridColor)
         {
@@ -651,81 +652,6 @@ namespace ACT.EditorUI
             if (material.HasProperty("_ZWrite")) material.SetFloat("_ZWrite", 1f);
             if (material.HasProperty("_Cull")) material.SetFloat("_Cull", (float)CullMode.Back);
             material.renderQueue = -1;
-        }
-
-        public static bool DrawUnityTransformHandle(Rect rect, Camera camera, Transform target, Bounds bounds, SceneViewToolMode tool, bool useLocalRotation, bool useCenterHandle)
-        {
-            if (camera == null || target == null || tool == SceneViewToolMode.Hand) return false;
-            if (tool == SceneViewToolMode.Rect) return false;
-
-            Vector3 handlePosition = useCenterHandle ? bounds.center : target.position;
-            Quaternion handleRotation = useLocalRotation ? target.rotation : Quaternion.identity;
-            float handleSize = HandleUtility.GetHandleSize(handlePosition);
-
-            Handles.SetCamera(rect, camera);
-            EditorGUI.BeginChangeCheck();
-
-            if (tool == SceneViewToolMode.Move)
-            {
-                Vector3 nextHandlePosition = Handles.PositionHandle(handlePosition, handleRotation);
-                if (EditorGUI.EndChangeCheck())
-                {
-                    target.position += nextHandlePosition - handlePosition;
-                    return true;
-                }
-
-                return false;
-            }
-
-            if (tool == SceneViewToolMode.Rotate)
-            {
-                Quaternion nextRotation = Handles.RotationHandle(target.rotation, handlePosition);
-                if (EditorGUI.EndChangeCheck())
-                {
-                    Quaternion delta = nextRotation * Quaternion.Inverse(target.rotation);
-                    if (useCenterHandle) target.position = handlePosition + delta * (target.position - handlePosition);
-                    target.rotation = nextRotation;
-                    return true;
-                }
-
-                return false;
-            }
-
-            if (tool == SceneViewToolMode.Scale)
-            {
-                Vector3 nextScale = Handles.ScaleHandle(target.localScale, handlePosition, handleRotation, handleSize);
-                if (EditorGUI.EndChangeCheck())
-                {
-                    target.localScale = ClampScale(nextScale);
-                    return true;
-                }
-
-                return false;
-            }
-
-            if (tool == SceneViewToolMode.Transform)
-            {
-                Vector3 nextHandlePosition = Handles.PositionHandle(handlePosition, handleRotation);
-                Quaternion nextRotation = Handles.RotationHandle(target.rotation, nextHandlePosition);
-                Vector3 nextScale = Handles.ScaleHandle(target.localScale, nextHandlePosition, useLocalRotation ? nextRotation : Quaternion.identity, handleSize);
-
-                if (EditorGUI.EndChangeCheck())
-                {
-                    Vector3 positionDelta = nextHandlePosition - handlePosition;
-                    target.position += positionDelta;
-
-                    Quaternion deltaRotation = nextRotation * Quaternion.Inverse(target.rotation);
-                    if (useCenterHandle) target.position = nextHandlePosition + deltaRotation * (target.position - nextHandlePosition);
-                    target.rotation = nextRotation;
-                    target.localScale = ClampScale(nextScale);
-                    return true;
-                }
-
-                return false;
-            }
-
-            EditorGUI.EndChangeCheck();
-            return false;
         }
 
         public static void DrawTransformHandle(Rect rect, Camera camera, Transform target, Bounds bounds, SceneViewToolMode tool, SceneViewDragMode active)
@@ -975,28 +901,23 @@ namespace ACT.EditorUI
         public static SceneViewToolMode DrawToolOverlayAndGetSelection(SceneViewToolMode current, float left, float top, float size, float gap)
         {
             Event evt = Event.current;
-            Rect background = GetToolOverlayRect(left, top, size, gap);
+            SceneViewToolMode selected = evt.type == EventType.MouseDown && evt.button == 0 && IsMouseOverToolOverlay(evt.mousePosition, left, top, size, gap)
+                ? PickToolOverlay(evt.mousePosition, left, top, size, gap)
+                : current;
+
             GUI.color = OverlayBackgroundColor;
-            GUI.DrawTexture(background, Texture2D.whiteTexture);
-            DrawToolButton(0, SceneViewToolMode.Hand, current, left, top, size, gap, "ViewToolMove", "d_ViewToolMove", "PanTool", "d_PanTool");
-            DrawToolButton(1, SceneViewToolMode.Move, current, left, top, size, gap, "MoveTool", "d_MoveTool", "MoveTool On", "d_MoveTool On");
-            DrawToolButton(2, SceneViewToolMode.Rotate, current, left, top, size, gap, "RotateTool", "d_RotateTool", "RotateTool On", "d_RotateTool On");
-            DrawToolButton(3, SceneViewToolMode.Scale, current, left, top, size, gap, "ScaleTool", "d_ScaleTool", "ScaleTool On", "d_ScaleTool On");
-            DrawToolButton(4, SceneViewToolMode.Rect, current, left, top, size, gap, "RectTool", "d_RectTool", "RectTool On", "d_RectTool On");
-            DrawToolButton(5, SceneViewToolMode.Transform, current, left, top, size, gap, "TransformTool", "d_TransformTool", "TransformTool On", "d_TransformTool On");
+            GUI.DrawTexture(GetToolOverlayRect(left, top, size, gap), Texture2D.whiteTexture);
+            for (int i = 0; i < ToolModes.Length; i++) DrawToolButton(i, ToolModes[i], selected, left, top, size, gap, ToolIcons[i]);
             GUI.color = Color.white;
-            return evt.type == EventType.MouseDown && evt.button == 0 && IsMouseOverToolOverlay(evt.mousePosition, left, top, size, gap) ? PickToolOverlay(evt.mousePosition, left, top, size, gap) : current;
+            return selected;
         }
 
         public static bool IsMouseOverToolOverlay(Vector2 mouse, float left, float top, float size, float gap) => GetToolOverlayRect(left, top, size, gap).Contains(mouse);
 
         public static SceneViewToolMode PickToolOverlay(Vector2 mouse, float left, float top, float size, float gap)
         {
-            for (int i = 0; i < 6; i++)
-            {
-                if (!GetToolButtonRect(i, left, top, size, gap).Contains(mouse)) continue;
-                return i switch { 0 => SceneViewToolMode.Hand, 1 => SceneViewToolMode.Move, 2 => SceneViewToolMode.Rotate, 3 => SceneViewToolMode.Scale, 4 => SceneViewToolMode.Rect, _ => SceneViewToolMode.Transform };
-            }
+            for (int i = 0; i < ToolModes.Length; i++)
+                if (GetToolButtonRect(i, left, top, size, gap).Contains(mouse)) return ToolModes[i];
             return SceneViewToolMode.Move;
         }
 
@@ -1046,12 +967,11 @@ namespace ACT.EditorUI
             return new Rect(Mathf.Round(buttonRect.center.x - width * 0.5f), Mathf.Round(buttonRect.center.y - height * 0.5f), width, height);
         }
 
-        static Rect GetToolOverlayRect(float left, float top, float size, float gap) => new(left, top, size + gap * 2f, size * 6f + gap * 7f);
+        static Rect GetToolOverlayRect(float left, float top, float size, float gap) => new(left, top, size + gap * 2f, size * ToolModes.Length + gap * (ToolModes.Length + 1));
         static Rect GetToolButtonRect(int index, float left, float top, float size, float gap) => new(left + gap, top + gap + index * (size + gap), size, size);
 
         static void DrawFallbackToolIcon(Rect buttonRect, SceneViewToolMode mode)
         {
-            Handles.BeginGUI();
             Color old = Handles.color;
             Handles.color = Color.white;
             Vector2 center = buttonRect.center;
@@ -1065,7 +985,6 @@ namespace ACT.EditorUI
             else DrawFallbackTransformIcon(center, size);
 
             Handles.color = old;
-            Handles.EndGUI();
         }
 
         static void DrawFallbackHandIcon(Vector2 center, float size)
