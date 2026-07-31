@@ -493,7 +493,6 @@ Preview/
    ├─ preview-camera-controls.gif
    ├─ preview-transform-tools.gif
    ├─ preview-view-modes.png
-   ├─ preview-auto-frame.gif
    ├─ preview-hierarchy.png
    ├─ preview-animation-player.gif
    └─ preview-animation-preset.png
