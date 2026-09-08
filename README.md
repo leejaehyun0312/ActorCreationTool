@@ -60,5 +60,4 @@ ActorCreationTool/
 
 ## 관련 링크
 
-- Notion 포트폴리오
-- 시연 영상
+- [Notion 포트폴리오](https://app.notion.com/p/Actor-Creation-Tool-d7bb1fd73c6f82f5816581eb9af70194?source=copy_link)
